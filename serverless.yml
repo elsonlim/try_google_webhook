@@ -1,0 +1,67 @@
+service: try-google-drive-webhook
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: dev
+  region: ap-southeast-1
+  environment:
+    DYNAMODB_REGION: ap-southeast-1
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - Fn::GetAtt:
+                - TryGoogleDriveWebhookCounter
+                - Arn
+            - Fn::GetAtt:
+                - TryGoogleDriveWebhookFileRecord
+                - Arn
+functions:
+  api:
+    handler: src/webhook.handler
+    events:
+      - httpApi: "*"
+
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3001
+
+resources:
+  Resources:
+    TryGoogleDriveWebhookCounter:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: TryGoogleDriveWebhookCounter
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        Tags:
+          - Key: Name
+            Value: TryGoogleDriveWebhookCounter
+    TryGoogleDriveWebhookFileRecord:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: TryGoogleDriveWebhookFileRecord
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        TimeToLiveSpecification:
+          AttributeName: expiresAt
+          Enabled: true
