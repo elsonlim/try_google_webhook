@@ -2,6 +2,7 @@
 import "dotenv/config";
 
 import { google } from "googleapis";
+import path from "path";
 
 // Access credentials securely from environment variables
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -10,19 +11,17 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 function createAuthenticatedClient() {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
-    throw new Error(
-      "Missing Google credentials in .env file. Please check your configuration."
-    );
-  }
+  const KEY_FILE_PATH = path.join(__dirname, "service-account-key.json");
 
-  const oAuth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET
-  );
+  console.log({ KEY_FILE_PATH });
 
-  oAuth2Client.setCredentials({
-    refresh_token: GOOGLE_REFRESH_TOKEN,
+  // The scopes define the level of access you are requesting.
+  // 'drive.readonly' is for viewing files, 'drive' is for full access.
+  const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
+
+  const oAuth2Client = new google.auth.GoogleAuth({
+    keyFile: KEY_FILE_PATH,
+    scopes: SCOPES,
   });
 
   return oAuth2Client;

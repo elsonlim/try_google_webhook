@@ -3,8 +3,8 @@ dotenv.config();
 import { google } from "googleapis";
 import express, { Request, Response } from "express";
 import serverless from "serverless-http";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { Client, isFullPage } from "@notionhq/client";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
@@ -14,9 +14,10 @@ import {
 
 import {
   setupDriveWebhook,
-  createAuthenticatedClient,
+  createAuthenticatedClientWithKeyFilePath,
+  createAuthenticatedClientWithRefreshToken,
   getTypeFromMime,
-} from "./helper";
+} from "./google-helper";
 
 const app = express();
 
@@ -50,14 +51,20 @@ app.post("/register", async (req: Request, res: Response) => {
   const WEBHOOK_URL = process.env.WEBHOOK_URL as string;
 
   const registerDetails = await setupDriveWebhook(
-    GOOGLE_REFRESH_TOKEN,
-    WEBHOOK_URL
+    WEBHOOK_URL,
+    GOOGLE_REFRESH_TOKEN
   );
 
   const webhookId = registerDetails?.webhookId;
   const startPageToken = registerDetails?.startPageToken;
   const channelId = registerDetails?.channelId;
   const resourceId = registerDetails?.resourceId;
+
+  if (!webhookId) {
+    console.error("Missing webhookId for DynamoDB item:", registerDetails);
+    res.status(400).send("Missing webhookId");
+    return;
+  }
 
   console.log("Webhook details saved to DynamoDB.");
   const client = new DynamoDBClient({
@@ -72,11 +79,11 @@ app.post("/register", async (req: Request, res: Response) => {
       Item: {
         id: webhookId,
         count: startPageToken,
-        google_refresh_token: GOOGLE_REFRESH_TOKEN,
         channelId,
         resourceId,
         notion_token: NOTION_TOKEN,
         map: Map,
+        google_refresh_token: GOOGLE_REFRESH_TOKEN,
       },
     })
   );
@@ -106,14 +113,14 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
   }
 
   const pageToken = data.Item ? (data.Item.count as string) : ("0" as string);
-  const google_refresh_token = data?.Item?.google_refresh_token as string;
+  // const google_refresh_token = data?.Item?.google_refresh_token as string;
   const notion_token = data?.Item?.notion_token as string;
   const googleDriveFolderNameToNotionDbIdMap = data?.Item
     ?.map as DynamoDbStringMap;
 
   console.log(
     `Webhook ID: ${webhookId}
-    \nPage Token: ${pageToken}\nGoogle Refresh Token: ${google_refresh_token}\nChannel ID: ${
+    \nPage Token: ${pageToken}\nChannel ID: ${
       data?.Item?.channelId
     }\nResource ID: ${
       data?.Item?.resourceId
@@ -122,7 +129,12 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
     )}`
   );
 
-  const authClient = createAuthenticatedClient(google_refresh_token);
+  const google_refresh_token = data?.Item?.google_refresh_token as string;
+
+  const authClient = google_refresh_token
+    ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
+    : createAuthenticatedClientWithKeyFilePath();
+
   const drive = google.drive({ version: "v3", auth: authClient });
 
   const changesResponse = await drive.changes.list({
@@ -134,7 +146,7 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
   // IMPORTANT: Save the 'newStartPageToken' for your next call
   console.log({
     changesResponse: JSON.stringify(changesResponse, null, 2),
-    data: changesResponse.data,
+    data: JSON.stringify(changesResponse.data),
   });
   const newStartPageToken = changesResponse.data.newStartPageToken;
 
@@ -149,7 +161,7 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
 
   const changes = changesResponse.data.changes || [];
   if (changes.length > 0) {
-    console.log(`Found ${changes.length} changes.`);
+    console.log({ "number of changes": changes.length, changes: changes });
 
     const NOTION_TOKEN = process.env.NOTION_TOKEN; // Your Notion integration token
     const NOTION_DATABASE_ID = `${process.env.NOTION_DATABASE_ID}`; // Your Notion database ID
@@ -161,7 +173,10 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
     const items = changes
       .filter(
         (change) =>
-          change.file && change.file.trashed === false && change.type === "file"
+          change.file &&
+          change.file.trashed === false &&
+          change.type === "file" &&
+          change.file.mimeType !== "application/vnd.google-apps.folder"
       )
       .map((item) => {
         const updateItem = {
@@ -199,6 +214,16 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
         if (record.Item) {
           console.log(`File ${item.id} already exists in the record.`);
           return;
+        } else {
+          await docClient.send(
+            new PutCommand({
+              TableName: "TryGoogleDriveWebhookFileRecord",
+              Item: {
+                id: item.id,
+                expiresAt: Math.floor(Date.now() / 1000) + 10, // 10 seconds
+              },
+            })
+          );
         }
 
         const parent = await drive.files.get({
@@ -276,32 +301,16 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
             URL: {
               url: item.URL as string,
             },
-            // Type: {
-            //   select: {
-            //     name: item.Type as string,
-            //   },
-            // },
-            // By: {
-            //   title: [
-            //     {
-            //       text: {
-            //         content: item.By as string,
-            //       },
-            //     },
-            //   ],
-            // },
+            Type: {
+              multi_select: [{ name: item.Type as string }],
+            },
+            By: {
+              select: {
+                name: item.By as string,
+              },
+            },
           },
         });
-
-        await docClient.send(
-          new PutCommand({
-            TableName: "TryGoogleDriveWebhookFileRecord",
-            Item: {
-              id: item.id,
-              expiresAt: Math.floor(Date.now() / 1000) + 5, // 5 seconds
-            },
-          })
-        );
       })
     );
   } else {
@@ -329,8 +338,7 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
     headersText += `Header: ${key}, Value: ${req.headers[key]}\n`;
   }
 
-  console.log({ headersText });
-  console.log({ updatedData });
+  console.log({ headersText, updatedData, "final message": "end of webhook" });
 
   res.status(200).send("OK");
 });

@@ -4,4 +4,5 @@ dist/
 .vscode/
 .DS_Store
 *.log   
-./serverless/
+service-account-key.json
+.serverless/

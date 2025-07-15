@@ -2,7 +2,7 @@
 import "dotenv/config";
 
 import { google } from "googleapis";
-import { v4 as uuidv4 } from "uuid";
+import path from "path";
 
 // Access credentials securely from environment variables
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
@@ -11,22 +11,13 @@ const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 function createAuthenticatedClient() {
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
-    throw new Error(
-      "Missing Google credentials in .env file. Please check your configuration."
-    );
-  }
-
-  const oAuth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET
-  );
-
-  oAuth2Client.setCredentials({
-    refresh_token: GOOGLE_REFRESH_TOKEN,
+  const KEY_FILE_PATH = path.join(__dirname, "service-account-key.json");
+  const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
+  const googleAuth = new google.auth.GoogleAuth({
+    keyFile: KEY_FILE_PATH,
+    scopes: SCOPES,
   });
-
-  return oAuth2Client;
+  return googleAuth; // Return the GoogleAuth object
 }
 
 async function findFile(fileId: string) {
@@ -34,11 +25,9 @@ async function findFile(fileId: string) {
     const authClient = createAuthenticatedClient();
     const drive = google.drive({ version: "v3", auth: authClient });
 
-    // List files in Google Drive
-
     const response = await drive.files.get({
       fileId: fileId,
-      fields: "*", // Specify the fields you want to retrieve
+      fields: "*",
     });
 
     const file = response.data;
@@ -48,5 +37,5 @@ async function findFile(fileId: string) {
   }
 }
 
-const fileId = "1Gf6RZaC1qMfRO2GAjC7XLmFLoa7lQVee"; // The x-google-resource-id is the file ID
+const fileId = "1978G498vjqn57pIhn0jMmKRmcuPPad2n";
 findFile(fileId);

@@ -35,6 +35,11 @@ async function addToDatabase() {
         URL: {
           url: "https://example.com",
         },
+        Type: {
+          select: {
+            name: "Sample Type",
+          },
+        },
       },
     });
 

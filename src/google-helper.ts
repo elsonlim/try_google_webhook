@@ -2,34 +2,64 @@ import "dotenv/config";
 
 import { google } from "googleapis";
 import { v4 as uuidv4 } from "uuid";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
+import path from "path";
 
-export function createAuthenticatedClient(GOOGLE_REFRESH_TOKEN: string) {
+export function createAuthenticatedClientWithRefreshToken(
+  GOOGLE_REFRESH_TOKEN: string
+) {
+  if (!GOOGLE_REFRESH_TOKEN || GOOGLE_REFRESH_TOKEN.length === 0) {
+    throw new Error("GOOGLE_REFRESH_TOKEN is required for authentication.");
+  }
+
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    throw new Error(
+      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required for authentication."
+    );
+  }
+
   const oAuth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET
   );
 
-  oAuth2Client.setCredentials({
-    refresh_token: GOOGLE_REFRESH_TOKEN,
+  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  return oAuth2Client;
+}
+
+export function createAuthenticatedClientWithKeyFilePath() {
+  const KEY_FILE_PATH = path.join(__dirname, "service-account-key.json");
+
+  console.log({ KEY_FILE_PATH });
+
+  // The scopes define the level of access you are requesting.
+  // 'drive.readonly' is for viewing files, 'drive' is for full access.
+  const SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
+
+  const oAuth2Client = new google.auth.GoogleAuth({
+    keyFile: KEY_FILE_PATH,
+    scopes: SCOPES,
   });
 
   return oAuth2Client;
 }
 
 export async function setupDriveWebhook(
-  GOOGLE_REFRESH_TOKEN: string,
-  WEBHOOK_URL: string
+  WEBHOOK_URL: string,
+  google_refresh_token?: string
 ) {
-  if (!WEBHOOK_URL || !GOOGLE_REFRESH_TOKEN) {
-    throw new Error(
-      "WEBHOOK_URL or GOOGLE_REFRESH_TOKEN is not defined in .env file."
-    );
-  }
-
   try {
-    const authClient = createAuthenticatedClient(GOOGLE_REFRESH_TOKEN);
+    const useGoogleRefreshToken =
+      !!google_refresh_token && google_refresh_token.length > 0;
+    if (useGoogleRefreshToken) {
+      console.log("Using refresh token for authentication.");
+    } else {
+      console.log("Using service account key file for authentication.");
+    }
+
+    const authClient = useGoogleRefreshToken
+      ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
+      : createAuthenticatedClientWithKeyFilePath();
+
     const drive = google.drive({ version: "v3", auth: authClient });
 
     const webhookId = uuidv4();
@@ -57,26 +87,23 @@ export async function setupDriveWebhook(
     });
 
     // 3. Log the successful registration details.
-    console.log(
-      "\n✅ Webhook registered successfully!: " +
-        webhookId +
-        "with startPagetoken: " +
-        startPageToken
-    );
-    console.log(`   Channel ID: ${watchResponse.data.id}`);
-    console.log(`   Resource ID: ${watchResponse.data.resourceId}`);
-    console.log(
-      `   Expiration: ${new Date(
-        Number(watchResponse.data.expiration)
-      ).toLocaleString()}`
-    );
 
-    return {
+    const returnData = {
       webhookId: webhookId,
       startPageToken: startPageToken,
       channelId: watchResponse.data.id,
       resourceId: watchResponse.data.resourceId,
     };
+
+    console.log({
+      message: "register successfully",
+      ...returnData,
+      expiration: new Date(
+        Number(watchResponse.data.expiration)
+      ).toLocaleString(),
+    });
+
+    return returnData;
   } catch (error) {
     // Log any errors that occur during the process.
     if (error instanceof Error) {
@@ -102,8 +129,8 @@ export function getTypeFromMime(mimeType: string): string {
     mimeType === "text/plain" ||
     mimeType === "text/csv"
   )
-    return "Document";
-  if (mimeType.startsWith("image/")) return "Image";
-  if (mimeType.startsWith("video/")) return "Video";
+    return "📝 Document";
+  if (mimeType.startsWith("image/")) return "🖼️ Image";
+  if (mimeType.startsWith("video/")) return "🎥 Video";
   return "Other";
 }

@@ -92,16 +92,12 @@ async function disableWebhook() {
 
   const resourceId = "KIktex1AmjnfPMPl_u3R4rIz_H4";
 
-  const channels = [
-    {
-      id: "ae87e648-0499-4239-a871-370d235ca42d",
-      resourceId,
-    },
-    {
-      id: "5e7316d9-7a11-43b2-af38-fc6f3905ea51",
-      resourceId,
-    },
-  ];
+  const channelIds = ["9774df09-eabf-4352-ba1e-5d7f0b064eb6"];
+
+  const channels = channelIds.map((id) => ({
+    id,
+    resourceId,
+  }));
 
   for (const channel of channels) {
     await drive.channels.stop({
