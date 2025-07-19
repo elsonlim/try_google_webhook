@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { google } from "googleapis";
+import { drive_v3, google, Auth } from "googleapis";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 
@@ -26,8 +26,8 @@ export function createAuthenticatedClientWithRefreshToken(
   return oAuth2Client;
 }
 
-export function createAuthenticatedClientWithKeyFilePath() {
-  const KEY_FILE_PATH = path.join(__dirname, "service-account-key.json");
+export function createAuthenticatedClientWithKeyFilePath(fileName: string) {
+  const KEY_FILE_PATH = path.join(__dirname, fileName);
 
   console.log({ KEY_FILE_PATH });
 
@@ -58,7 +58,9 @@ export async function setupDriveWebhook(
 
     const authClient = useGoogleRefreshToken
       ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
-      : createAuthenticatedClientWithKeyFilePath();
+      : createAuthenticatedClientWithKeyFilePath(
+          "service-account-key-uat.json"
+        );
 
     const drive = google.drive({ version: "v3", auth: authClient });
 
@@ -66,7 +68,9 @@ export async function setupDriveWebhook(
 
     // 1. Get the starting point for changes.
     console.log("Fetching the start page token...");
-    const tokenResponse = await drive.changes.getStartPageToken({});
+    const tokenResponse = await drive.changes.getStartPageToken({
+      driveId: process.env.GOOGLE_DRIVE_ID as string,
+    });
     const startPageToken = tokenResponse.data.startPageToken;
 
     if (!startPageToken) {
@@ -79,6 +83,9 @@ export async function setupDriveWebhook(
     console.log(`Registering webhook at: ${WEBHOOK_URL}/${webhookId}`);
     const watchResponse = await drive.changes.watch({
       pageToken: startPageToken,
+      driveId: process.env.GOOGLE_DRIVE_ID as string,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
       requestBody: {
         id: webhookId,
         type: "web_hook",
@@ -133,4 +140,74 @@ export function getTypeFromMime(mimeType: string): string {
   if (mimeType.startsWith("image/")) return "🖼️ Image";
   if (mimeType.startsWith("video/")) return "🎥 Video";
   return "Other";
+}
+
+export class GoogleDriveObject {
+  drive: drive_v3.Drive;
+
+  constructor(private authClient: Auth.OAuth2Client | Auth.GoogleAuth) {
+    this.drive = google.drive({ version: "v3", auth: this.authClient });
+  }
+
+  async getChanges(pageToken: string): Promise<drive_v3.Schema$ChangeList> {
+    try {
+      const response = await this.drive.changes.list({
+        pageToken,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        driveId: process.env.GOOGLE_DRIVE_ID as string,
+        fields:
+          "nextPageToken, newStartPageToken, changes(kind, type, removed, file(parents, id, name, mimeType, trashed, explicitlyTrashed, webViewLink))",
+      });
+
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching changes:", error);
+      throw error;
+    }
+  }
+
+  async getStartPageToken(): Promise<drive_v3.Schema$StartPageToken> {
+    try {
+      const response = await this.drive.changes.getStartPageToken({
+        supportsAllDrives: true,
+        driveId: process.env.GOOGLE_DRIVE_ID as string,
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching start page token:", error);
+      throw error;
+    }
+  }
+
+  async getFile(fileId: string): Promise<drive_v3.Schema$File> {
+    try {
+      const response = await this.drive.files.get({
+        fileId: fileId,
+        fields: "name, id, parents",
+        supportsAllDrives: true,
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching file:", error);
+      throw error;
+    }
+  }
+
+  async getFileList(pageSize: number = 100): Promise<drive_v3.Schema$FileList> {
+    try {
+      const response = await this.drive.files.list({
+        driveId: process.env.GOOGLE_DRIVE_ID as string,
+        corpora: "drive",
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        pageSize,
+        fields: "nextPageToken, files(id, name, mimeType)",
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error listing files:", error);
+      throw error;
+    }
+  }
 }

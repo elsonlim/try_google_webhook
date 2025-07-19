@@ -3,7 +3,7 @@ dotenv.config();
 import { google } from "googleapis";
 import express, { Request, Response } from "express";
 import serverless from "serverless-http";
-import { Client, isFullPage } from "@notionhq/client";
+import { Client } from "@notionhq/client";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
@@ -18,6 +18,7 @@ import {
   createAuthenticatedClientWithRefreshToken,
   getTypeFromMime,
 } from "./google-helper";
+import TryGoogleDriveWebhookCounter from "./TryGoogleDriveWebhookCounter";
 
 const app = express();
 
@@ -47,7 +48,7 @@ app.use((req, res, next) => {
 app.post("/register", async (req: Request, res: Response) => {
   const GOOGLE_REFRESH_TOKEN = req.body.GOOGLE_REFRESH_TOKEN as string;
   const NOTION_TOKEN = req.body.NOTION_TOKEN as string;
-  const Map = req.body.Map as string;
+  const Map = req.body.Map as Map<string, string>;
   const WEBHOOK_URL = process.env.WEBHOOK_URL as string;
 
   const registerDetails = await setupDriveWebhook(
@@ -72,21 +73,26 @@ app.post("/register", async (req: Request, res: Response) => {
     endpoint: process.env.DYNAMODB_DB_ENDPOINT,
   });
   const docClient = DynamoDBDocumentClient.from(client);
+  const GoogleDriveWebhookCounter = new TryGoogleDriveWebhookCounter(docClient);
 
-  const data = await docClient.send(
-    new PutCommand({
-      TableName: "TryGoogleDriveWebhookCounter",
-      Item: {
-        id: webhookId,
-        count: startPageToken,
-        channelId,
-        resourceId,
-        notion_token: NOTION_TOKEN,
-        map: Map,
-        google_refresh_token: GOOGLE_REFRESH_TOKEN,
-      },
-    })
-  );
+  if (!startPageToken || !channelId || !resourceId) {
+    console.error(
+      "Missing required fields for DynamoDB item:",
+      registerDetails
+    );
+    res.status(400).send("Missing required fields");
+    return;
+  }
+
+  const data = GoogleDriveWebhookCounter.insertWebHookCounter({
+    id: webhookId,
+    count: startPageToken,
+    channelId,
+    resourceId,
+    notion_token: NOTION_TOKEN,
+    map: Map,
+    google_refresh_token: GOOGLE_REFRESH_TOKEN,
+  });
 
   res.status(200).send({ data });
 });
@@ -133,7 +139,7 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
 
   const authClient = google_refresh_token
     ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
-    : createAuthenticatedClientWithKeyFilePath();
+    : createAuthenticatedClientWithKeyFilePath("service-account-key.json");
 
   const drive = google.drive({ version: "v3", auth: authClient });
 
