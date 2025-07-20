@@ -44,7 +44,7 @@ export function createAuthenticatedClientWithKeyFilePath(fileName: string) {
 }
 
 export async function setupDriveWebhook(
-  WEBHOOK_URL: string,
+  webhookUrl: string,
   google_refresh_token?: string
 ) {
   try {
@@ -58,20 +58,16 @@ export async function setupDriveWebhook(
 
     const authClient = useGoogleRefreshToken
       ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
-      : createAuthenticatedClientWithKeyFilePath(
-          "service-account-key-uat.json"
-        );
+      : createAuthenticatedClientWithKeyFilePath("service-account-key.json");
 
-    const drive = google.drive({ version: "v3", auth: authClient });
+    const drive = new GoogleDriveObject(authClient);
 
     const webhookId = uuidv4();
 
     // 1. Get the starting point for changes.
     console.log("Fetching the start page token...");
-    const tokenResponse = await drive.changes.getStartPageToken({
-      driveId: process.env.GOOGLE_DRIVE_ID as string,
-    });
-    const startPageToken = tokenResponse.data.startPageToken;
+    const tokenResponse = await drive.getStartPageToken();
+    const startPageToken = tokenResponse.startPageToken;
 
     if (!startPageToken) {
       throw new Error("Failed to retrieve a valid start page token.");
@@ -80,34 +76,24 @@ export async function setupDriveWebhook(
     console.log(`Successfully retrieved start page token.`);
 
     // 2. Use the token to register the webhook.
-    console.log(`Registering webhook at: ${WEBHOOK_URL}/${webhookId}`);
-    const watchResponse = await drive.changes.watch({
-      pageToken: startPageToken,
-      driveId: process.env.GOOGLE_DRIVE_ID as string,
-      includeItemsFromAllDrives: true,
-      supportsAllDrives: true,
-      requestBody: {
-        id: webhookId,
-        type: "web_hook",
-        address: `${WEBHOOK_URL}/${webhookId}`,
-      },
-    });
-
-    // 3. Log the successful registration details.
+    console.log(`Registering webhook at: ${webhookUrl}/${webhookId}`);
+    const watchResponse = await drive.watchChanges(
+      startPageToken,
+      webhookUrl,
+      webhookId
+    );
 
     const returnData = {
       webhookId: webhookId,
       startPageToken: startPageToken,
-      channelId: watchResponse.data.id,
-      resourceId: watchResponse.data.resourceId,
+      channelId: watchResponse.id,
+      resourceId: watchResponse.resourceId,
     };
 
     console.log({
       message: "register successfully",
       ...returnData,
-      expiration: new Date(
-        Number(watchResponse.data.expiration)
-      ).toLocaleString(),
+      expiration: new Date(Number(watchResponse.expiration)).toLocaleString(),
     });
 
     return returnData;
@@ -207,6 +193,51 @@ export class GoogleDriveObject {
       return response.data;
     } catch (error) {
       console.error("Error listing files:", error);
+      throw error;
+    }
+  }
+
+  async watchChanges(
+    pageToken: string,
+    webhookUrl: string,
+    webhookId: string
+  ): Promise<drive_v3.Schema$Channel> {
+    try {
+      const webhookAddress = `${webhookUrl}/${webhookId}`;
+      console.log({ webhookAddress });
+
+      const response = await this.drive.changes.watch({
+        pageToken,
+        driveId: process.env.GOOGLE_DRIVE_ID as string,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+        requestBody: {
+          id: webhookId,
+          type: "web_hook",
+          address: webhookAddress,
+        },
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error watching changes:", error);
+      throw error;
+    }
+  }
+
+  async deregisterWebhook(
+    channelId: string,
+    resourceId: string
+  ): Promise<void> {
+    try {
+      await this.drive.channels.stop({
+        requestBody: {
+          id: channelId,
+          resourceId: resourceId,
+        },
+      });
+      console.log(`Webhook with ID ${channelId} deregistered successfully.`);
+    } catch (error) {
+      console.error("Error deregistering webhook:", error);
       throw error;
     }
   }

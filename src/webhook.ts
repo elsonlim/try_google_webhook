@@ -1,6 +1,5 @@
 import * as dotenv from "dotenv";
 dotenv.config();
-import { google } from "googleapis";
 import express, { Request, Response } from "express";
 import serverless from "serverless-http";
 import { Client } from "@notionhq/client";
@@ -17,15 +16,19 @@ import {
   createAuthenticatedClientWithKeyFilePath,
   createAuthenticatedClientWithRefreshToken,
   getTypeFromMime,
+  GoogleDriveObject,
 } from "./google-helper";
 import TryGoogleDriveWebhookCounter from "./TryGoogleDriveWebhookCounter";
 
 const app = express();
 
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  console.log("Headers:", req.headers);
-  console.log("Body:", req.body);
+  console.log({
+    queryTime: `[${new Date().toISOString()}]`,
+    url: `${req.method} ${req.originalUrl}`,
+    headers: req.headers,
+    body: req.body,
+  });
   next();
 });
 
@@ -115,14 +118,15 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
   );
 
   interface DynamoDbStringMap {
-    [key: string]: { value: string };
+    [key: string]: string;
   }
 
   const pageToken = data.Item ? (data.Item.count as string) : ("0" as string);
-  // const google_refresh_token = data?.Item?.google_refresh_token as string;
   const notion_token = data?.Item?.notion_token as string;
   const googleDriveFolderNameToNotionDbIdMap = data?.Item
     ?.map as DynamoDbStringMap;
+
+  console.log({ googleDriveFolderNameToNotionDbIdMap });
 
   console.log(
     `Webhook ID: ${webhookId}
@@ -141,36 +145,40 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
     ? createAuthenticatedClientWithRefreshToken(google_refresh_token)
     : createAuthenticatedClientWithKeyFilePath("service-account-key.json");
 
-  const drive = google.drive({ version: "v3", auth: authClient });
+  // const drive = google.drive({ version: "v3", auth: authClient });
+  const drive = new GoogleDriveObject(authClient);
 
-  const changesResponse = await drive.changes.list({
-    pageToken,
-    fields:
-      "nextPageToken, newStartPageToken, changes(kind, type, removed, file(parents, id, name, mimeType, trashed, explicitlyTrashed, webViewLink))",
-  });
+  if (!googleDriveFolderNameToNotionDbIdMap) {
+    console.error(
+      `Google Drive folder to Notion DB map is missing in the request body.\n Webhook ID: ${webhookId}`
+    );
+    drive.deregisterWebhook(
+      req.headers["x-goog-channel-id"] as string,
+      req.headers["x-goog-resource-id"] as string
+    );
+    res
+      .status(400)
+      .send(
+        "Missing Google Drive folder to Notion DB map, deregistering webhook."
+      );
+    return;
+  }
 
-  // IMPORTANT: Save the 'newStartPageToken' for your next call
-  console.log({
-    changesResponse: JSON.stringify(changesResponse, null, 2),
-    data: JSON.stringify(changesResponse.data),
-  });
-  const newStartPageToken = changesResponse.data.newStartPageToken;
+  const changesResponse = await drive.getChanges(pageToken + "");
+  const changes = changesResponse.changes || [];
+  const newStartPageToken = changesResponse.newStartPageToken;
 
-  console.log("old Page Token:", pageToken);
-  console.log("New Start Page Token:", newStartPageToken);
+  console.log({ changes, curPageStartToken: pageToken, newStartPageToken });
 
   if (pageToken === newStartPageToken) {
     console.log("No new changes found.");
     res.status(200).send("No new changes found.");
     return;
   }
-
-  const changes = changesResponse.data.changes || [];
   if (changes.length > 0) {
     console.log({ "number of changes": changes.length, changes: changes });
 
     const NOTION_TOKEN = process.env.NOTION_TOKEN; // Your Notion integration token
-    const NOTION_DATABASE_ID = `${process.env.NOTION_DATABASE_ID}`; // Your Notion database ID
 
     const notion = new Client({
       auth: NOTION_TOKEN,
@@ -232,57 +240,47 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
           );
         }
 
-        const parent = await drive.files.get({
-          fileId: item.parentId as string,
-          fields: "name, id, parents",
-        });
+        const parent = await drive.getFile(item.parentId as string);
 
         let itemBy;
         let notionDBToInsert;
         // check if parent exists in the map key
         if (
-          !googleDriveFolderNameToNotionDbIdMap[
-            parent.data.name?.trim() as string
-          ]
+          !googleDriveFolderNameToNotionDbIdMap[parent.name?.trim() as string]
         ) {
-          console.log(
-            `Parent folder ${parent.data.name} not found in the map.`
-          );
+          console.log(`Parent folder ${parent.name} not found in the map.`);
 
-          if (parent.data.parents?.[0]) {
+          if (parent.parents?.[0]) {
             console.log(
-              `Parent folder ${parent.data.name} has a parent, checking further.`
+              `Parent folder ${parent.name} has a parent, checking further.`
             );
 
-            const parentOfParent = await drive.files.get({
-              fileId: parent.data.parents?.[0] as string,
-              fields: "name, id, parents",
-            });
+            const parentOfParent = await drive.getFile(
+              parent.parents?.[0] as string
+            );
 
             if (
               googleDriveFolderNameToNotionDbIdMap[
-                parentOfParent?.data?.name as string
+                parentOfParent?.name as string
               ]
             ) {
               notionDBToInsert =
                 googleDriveFolderNameToNotionDbIdMap[
-                  parentOfParent.data.name as string
+                  parentOfParent.name as string
                 ];
-              itemBy = parentOfParent.data.name as string;
+              itemBy = parentOfParent.name as string;
             }
           } else {
             console.log(
-              `Parent folder ${parent.data.name} has no parent, skipping further checks.`
+              `Parent folder ${parent.name} has no parent, skipping further checks.`
             );
             return;
           }
         } else {
           // get notion database ID from the map
           notionDBToInsert =
-            googleDriveFolderNameToNotionDbIdMap[
-              parent.data.name?.trim() as string
-            ];
-          itemBy = parent.data.name as string;
+            googleDriveFolderNameToNotionDbIdMap[parent.name?.trim() as string];
+          itemBy = parent.name as string;
         }
 
         if (!notionDBToInsert || !itemBy) {
@@ -292,8 +290,12 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
 
         item.By = itemBy;
 
-        await notion.pages.create({
-          parent: { database_id: NOTION_DATABASE_ID as string },
+        console.log({
+          notionDBToInsert,
+        });
+
+        const notionResponse = await notion.pages.create({
+          parent: { database_id: notionDBToInsert as string },
           properties: {
             Title: {
               title: [
@@ -304,19 +306,21 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
                 },
               ],
             },
-            URL: {
-              url: item.URL as string,
-            },
-            Type: {
-              multi_select: [{ name: item.Type as string }],
-            },
-            By: {
-              select: {
-                name: item.By as string,
-              },
-            },
+            // URL: {
+            //   url: item.URL as string,
+            // },
+            // Type: {
+            //   multi_select: [{ name: item.Type as string }],
+            // },
+            // By: {
+            //   select: {
+            //     name: item.By as string,
+            //   },
+            // },
           },
         });
+
+        console.log({ notionResponse });
       })
     );
   } else {
@@ -338,13 +342,7 @@ app.post("/webhook/:webhookId", async (req: Request, res: Response) => {
     })
   );
 
-  let headersText = "";
-
-  for (let key in req.headers) {
-    headersText += `Header: ${key}, Value: ${req.headers[key]}\n`;
-  }
-
-  console.log({ headersText, updatedData, "final message": "end of webhook" });
+  console.log({ updatedData, "final message": "end of webhook" });
 
   res.status(200).send("OK");
 });
@@ -379,10 +377,8 @@ app.post("/counter", async (req: Request, res: Response) => {
   res.status(200).json({ message: "Counter received", count });
 });
 
-// A simple root path for health checks
 app.get("/", (req: Request, res: Response) => {
   res.status(200).json({ message: "Server is running!" });
 });
 
-// Export the app wrapped in the serverless-http handler
 export const handler = serverless(app);
